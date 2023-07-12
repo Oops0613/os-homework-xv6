@@ -113,6 +113,10 @@ allocproc(void)
     } else {
       release(&p->lock);
     }
+    /** AlarmTest  */
+  p->ticks = -1;
+  p->tickpassed = 0;
+  p->handler = 0;
   }
   return 0;
 
