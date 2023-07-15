@@ -65,14 +65,36 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
-    // ok
-  } else {
+  } 
+  else if (r_scause() == 13 || r_scause() == 15) {
+    uint64 va = r_stval(), *pa, *old_pa;
+    uint64 flags;
+    pte_t *pte;
+
+    if ((pte = walk(p->pagetable, va, 0)) && *pte & PTE_RSW) {
+        if ((pa = kalloc()) != 0) {
+            old_pa = (uint64 *)PTE2PA(*pte);
+            // 将原来的page复制到新的page上，并设置PTE_W
+            memmove(pa, (char *)old_pa, PGSIZE);
+            flags = ((uint64)PTE_FLAGS(*pte) | PTE_W) & ~PTE_RSW;
+            // 先取消map
+            uvmunmap(p->pagetable, PGROUNDDOWN(va), 1, 0);
+            // 取消map后，old_pa的reference count要减一
+            reference_add((uint64*)old_pa, -1);
+            // 再重新map到pa
+            mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, flags);
+        } else {
+            // 如果没有空间，杀死进程
+            p->killed = 1;
+        }
+    // 如果无法pte或者该page fault不是cow类型的page:
+    }
+    
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
-  }
-
   if(p->killed)
     exit(-1);
 
@@ -81,6 +103,7 @@ usertrap(void)
     yield();
 
   usertrapret();
+}
 }
 
 //

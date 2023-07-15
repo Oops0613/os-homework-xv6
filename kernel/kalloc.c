@@ -9,6 +9,26 @@
 #include "riscv.h"
 #include "defs.h"
 
+// 新增
+int reference_count[(PHYSTOP - KERNBASE) / PGSIZE];
+
+//
+// **新增**
+// 用来为reference_count增加或者减少
+// 并且检查reference，若为0，free该内存
+// n 可以为负数
+//
+void reference_add(uint64 *pa, int n) {
+  int *count = &reference_count[(PHYSTOP - (uint64)pa) / PGSIZE];
+  *count += n; 
+  if (*count == 0) {
+    kfree(pa);
+  } 
+  if (*count < 0)
+    panic("reference");
+}
+
+
 void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
@@ -35,6 +55,12 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
+  printf("start ~ end:%p ~ %p\n", p, pa_end);
+  // for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
+  //   /** 初始化ref_count  */
+  //   reference[getrefindex(p)] = 0;
+  //   kfree(p);
+  // }
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
     kfree(p);
 }
@@ -50,6 +76,17 @@ kfree(void *pa)
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+  //
+  // 修改
+  //
+
+  // 该页ref_count减一，若减后为0，执行free
+  int *count = &reference_count[(PHYSTOP - PGROUNDDOWN((uint64)pa)) / PGSIZE];
+  if (*count > 0)
+      *count += 1;
+  if (*count == 0)
+      return;
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -78,5 +115,13 @@ kalloc(void)
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
+
+  //
+  // 修改
+  //
+
+  // 设置初始reference计数器
+  reference_count[(PHYSTOP - (uint64)r) / PGSIZE] = 1;
+
   return (void*)r;
 }

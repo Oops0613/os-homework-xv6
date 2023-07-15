@@ -303,27 +303,27 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
-
-  for(i = 0; i < sz; i += PGSIZE){
+  for(i = 0; i < sz; i += PGSIZE) {
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+
+    // 清除子进程和父进程的PTE_W，并设置PTE_RSW
+    *pte = (*pte & ~PTE_W) | PTE_RSW;
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // map到pa而不是mem
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
+    // 增加一次引用
+    reference_add((uint64 *)pa, 1);
   }
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, 0, i, 1);
   return -1;
 }
 
@@ -346,10 +346,34 @@ uvmclear(pagetable_t pagetable, uint64 va)
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
-  uint64 n, va0, pa0;
+  uint64 n, va0, pa0, pa;
+  pte_t *pte;
+  uint64 flags;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    pa0 = walkaddr(pagetable, va0); // 这部分用来避免读取奇怪的地址
+    if(pa0 == 0)
+      return -1;
+
+    // 取出pte，用来检查是否是COW_page 
+    pte = walk(pagetable, va0, 0);
+    // 这部分和usertrap是类似的
+    if (*pte & PTE_RSW) {
+        if ((pa = (uint64)kalloc()) != 0) {
+            //  将原来的page复制一份，并设置PTE_W
+            flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_RSW;
+            memmove((uint64 *)pa, (char*)pa0, PGSIZE);
+            // 先取消map, 再重新map到pa
+            uvmunmap(pagetable, va0, 1, 0);
+            reference_add((uint64*)pa0, -1);
+            mappages(pagetable, va0, PGSIZE, (uint64)pa, flags);
+        } else {
+            // 如果没有空间，返回-1
+            return -1;
+        }
+    }
+    // 重新获取pa0
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
@@ -363,6 +387,22 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     dstva = va0 + PGSIZE;
   }
   return 0;
+  // uint64 n, va0, pa0;
+  // while(len > 0){
+  //   va0 = PGROUNDDOWN(dstva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (dstva - va0);
+  //   if(n > len)
+  //     n = len;
+  //   memmove((void *)(pa0 + (dstva - va0)), src, n);
+
+  //   len -= n;
+  //   src += n;
+  //   dstva = va0 + PGSIZE;
+  // }
+  // return 0;
 }
 
 // Copy from user to kernel.
