@@ -102,7 +102,25 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+  acquire(&e1000_lock);// 取出下一个tx_ring的index
+  uint32 index = regs[E1000_TDT];
+  // 如果当前index的ring没有完成之前的传输请求 返回error
+  if ((tx_ring[index].status & E1000_TXD_STAT_DD) == 0)
+  {
+    release(&e1000_lock);
+    printf("In TX:buf overflows!\n");
+    return -1;
+  }
+  if (tx_mbufs[index])// 之前的地址还未释放
+  {
+    mbuffree(tx_mbufs[index]);
+  }
+  tx_mbufs[index] = m;
+  tx_ring[index].addr = (uint64)m->head;
+  tx_ring[index].length = m->len;
+  tx_ring[index].cmd=E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+  regs[E1000_TDT] = (index + 1) % TX_RING_SIZE;
+  release(&e1000_lock);
   return 0;
 }
 
@@ -115,6 +133,28 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  uint32 index = regs[E1000_RDT];
+  index = (index + 1) % RX_RING_SIZE;
+  while (rx_ring[index].status&E1000_RXD_STAT_DD)
+  {
+    // printf("In rx aquire\n");
+    acquire(&e1000_lock);
+    mbufput(rx_mbufs[index], rx_ring[index].length);
+    struct mbuf *rx_buf=rx_mbufs[index];
+    net_rx(rx_buf);
+    struct mbuf *buf=mbufalloc(0);
+    if (!buf)
+    {
+      panic("mbuf alloc failed!");
+    }
+    regs[E1000_RDT]=index;
+ 
+    rx_mbufs[index] = buf;
+    rx_ring[index].addr=(uint64)buf->head;
+    rx_ring[index].status=0;
+    release(&e1000_lock);
+    index=(regs[E1000_RDT]+1)%RX_RING_SIZE;
+  }
 }
 
 void
