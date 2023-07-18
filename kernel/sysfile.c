@@ -344,7 +344,40 @@ sys_open(void)
   if((omode & O_TRUNC) && ip->type == T_FILE){
     itrunc(ip);
   }
+  if(ip->type == T_SYMLINK && !(omode & O_NOFOLLOW))
+  {
+    int depth = 100;
+    char path[MAXPATH];
 
+    for(int i = 0; i < depth; ++i)
+    {
+      if(readi(ip, 0, (uint64)path, 0, MAXPATH) != MAXPATH)
+      {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+
+      iunlockput(ip);
+
+      ip = namei(path);
+      if(ip == 0)
+      {
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      if(ip->type != T_SYMLINK)
+        break;
+
+      if(i == depth - 1)
+      {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
+  }
   iunlock(ip);
   end_op();
 
@@ -482,5 +515,33 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH];
+  char path[MAXPATH];
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+  {
+    return -1;
+  }
+  begin_op();
+
+  struct inode *ip;//存放路径
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0 )
+  {
+    end_op();
+    return -1;
+  }
+  if(writei(ip, 0, (uint64)target, 0, MAXPATH) < MAXPATH)
+  {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
   return 0;
 }
