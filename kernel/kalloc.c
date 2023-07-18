@@ -18,16 +18,45 @@ struct run {
   struct run *next;
 };
 
-struct {
+struct kmem{
   struct spinlock lock;
   struct run *freelist;
 } kmem;
 
+struct kmem kmems[NCPU];//每个CPU都有自己的freelist
+
+struct run* trypopr(int id){
+  struct run *r;
+  r = kmems[id].freelist;
+  if(r)
+    kmems[id].freelist = r->next;
+  return r;
+}//空闲块移出
+
+void trypushr(int id, struct run* r){
+  if(r){
+    r->next = kmems[id].freelist;
+    kmems[id].freelist = r;
+  }
+  else
+  {
+    panic("cannot push null run");
+  }
+}//空闲块插入
+
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  push_off();
+  int currentid = cpuid();//当前CPUid
+  pop_off();
+  printf("# cpuId:%d \n",currentid);
+  for (int i = 0; i < NCPU; i++)
+  {
+    initlock(&kmems[i].lock, "kmem");
+  }  
   freerange(end, (void*)PHYSTOP);
+  printf("# kinit end:%d \n",currentid);
 }
 
 void
@@ -47,19 +76,17 @@ void
 kfree(void *pa)
 {
   struct run *r;
-
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
-
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
-
   r = (struct run*)pa;
-
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off();
+  int currentid = cpuid();
+  pop_off();
+  acquire(&kmems[currentid].lock);
+  trypushr(currentid, r);
+  release(&kmems[currentid].lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -69,13 +96,31 @@ void *
 kalloc(void)
 {
   struct run *r;
-
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
-
+  int issteal = 0;//标识是否为偷盗
+  push_off();
+  int currentid = cpuid();
+  pop_off();
+  acquire(&kmems[currentid].lock);
+  r = trypopr(currentid);
+  if(!r){//当前freelist为空
+    for (int id = 0; id < NCPU; id++)
+    {//遍历其他freelist
+      if(id != currentid){
+        if(kmems[id].freelist){//有空闲块
+          acquire(&kmems[id].lock);
+          r = trypopr(id);
+          trypushr(currentid, r);
+          issteal = 1;
+          release(&kmems[id].lock);
+          break;
+        }
+      } 
+    }
+  }
+  //如果是偷盗的，则把currentid的freelist释放出来
+  if(issteal)
+    r = trypopr(currentid);
+  release(&kmems[currentid].lock);
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
