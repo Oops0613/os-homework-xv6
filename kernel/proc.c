@@ -101,11 +101,13 @@ allocpid() {
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
+#define VMASTART PGROUNDDOWN(MAXVA - 2 * PGSIZE)
+//trampoline与trapframe均占用一个页面
 static struct proc*
 allocproc(void)
 {
   struct proc *p;
-
+  
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     if(p->state == UNUSED) {
@@ -140,7 +142,11 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+  for (int i = NVMA - 1; i >= 0; i--)
+  {
+    p->vmas[i].vm_valid = 1;
+  }
+  p->current_maxva = VMASTART;
   return p;
 }
 
@@ -314,7 +320,20 @@ fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
-
+  np->current_maxva = p->current_maxva;
+  np->current_imaxvma = p->current_imaxvma;
+  for (int i = NVMA - 1; i >= 0; i--)
+  {
+    if(p->vmas[i].vm_file)
+      p->vmas[i].vm_file->ref++;
+    np->vmas[i].vm_end = p->vmas[i].vm_end;
+    np->vmas[i].vm_fd = p->vmas[i].vm_fd;
+    np->vmas[i].vm_file = p->vmas[i].vm_file;
+    np->vmas[i].vm_flags = p->vmas[i].vm_flags;
+    np->vmas[i].vm_prot = p->vmas[i].vm_prot;
+    np->vmas[i].vm_start = p->vmas[i].vm_start;
+    np->vmas[i].vm_valid = p->vmas[i].vm_valid;
+  }
   return pid;
 }
 
@@ -352,7 +371,27 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
-
+  struct VMA* vma;
+  for (int i = 0; i < NVMA; i++)
+  {
+    if(!p->vmas[i].vm_valid){
+      vma = &p->vmas[i];
+      vma->vm_valid = 1;
+      int totsz = vma->vm_end - vma->vm_start;
+      if(walkaddr(p->pagetable, vma->vm_start)){
+        if(vma->vm_flags == MAP_SHARED){
+          printf("sys_munmap(): write back \n");
+          filewrite(vma->vm_file, vma->vm_start, totsz);
+        }
+        uvmunmap(p->pagetable, vma->vm_start, totsz,1);
+      }
+      vma->vm_start += totsz;
+      if(vma->vm_start == vma->vm_end){
+        vma->vm_file->ref--;
+      }
+    }
+  }
+  p->current_maxva = VMASTART;
   begin_op();
   iput(p->cwd);
   end_op();

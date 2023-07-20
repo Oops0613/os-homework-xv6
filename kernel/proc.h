@@ -81,6 +81,23 @@ struct trapframe {
 };
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+struct VMA
+{
+  //说明VMA是否可用，1为可用
+  int vm_valid;   
+  uint64 vm_start; 
+  uint64 vm_end; 
+  //类型
+  int vm_flags;
+  //权限
+  int vm_prot; 
+  //指向某个文件
+  struct file* vm_file;
+  //文件描述符
+  int vm_fd;
+};
+
+#define NVMA 100
 
 // Per-process state
 struct proc {
@@ -105,4 +122,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  struct VMA vmas[NVMA];
+  uint64 current_maxva;//当前最大的vma位置
+  uint64 current_imaxvma;
 };

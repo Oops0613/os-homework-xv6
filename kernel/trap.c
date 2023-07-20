@@ -67,7 +67,53 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  else if (r_scause() == 13 || r_scause() == 15)
+  {
+    uint64 va = r_stval();
+
+    if(va >= p->sz || PGROUNDUP(va) == PGROUNDDOWN(p->trapframe->sp)) p->killed = 1;
+    else
+    {
+      for(int i = 0; i < MAXMMAP; ++i)
+      {
+        if(p->map_addr[i].used && p->map_addr[i].addr <= va && va < (p->map_addr[i].addr + p->map_addr[i].length))
+        {
+          uint64 pa = (uint64)kalloc();
+          if(pa == 0)
+          {
+            p->killed = 1;
+            break;
+          }
+          memset((void *)pa, 0, PGSIZE);
+          struct file *mfile = p->map_addr[i].mfile;
+          ilock(mfile->ip);
+          //计算要读取文件页面离文件开头的偏移量 
+          int offset = PGROUNDDOWN(va - p->map_addr[i].addr);
+          int cnt = readi(mfile->ip, 0, pa, offset, PGSIZE);
+          if(cnt == 0)
+          {
+            iunlock(mfile->ip);
+            kfree((void *)pa);
+            p->killed = 1;
+            break;
+          }
+          iunlock(mfile->ip);
+          int flags = PTE_U;
+          if(p->map_addr[i].prot & PROT_READ) flags |= PTE_R;
+          if(p->map_addr[i].prot & PROT_WRITE) flags |= PTE_W;
+          if(p->map_addr[i].prot & PROT_EXEC) flags |= PTE_X;
+          if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, pa, flags)  < 0)
+          {
+            kfree((void *)pa);
+            p->killed = 1;
+          }
+          break;
+        }
+      }
+    }
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

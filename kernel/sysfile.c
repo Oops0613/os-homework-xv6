@@ -484,3 +484,106 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void){
+  uint64 addr;
+  int length;
+  int prot;
+  int flags;
+  int fd;
+  struct file* f;
+  int offset;
+  
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || 
+     argint(2, &prot) < 0 || argint(3, &flags) < 0 || 
+     argfd(4, &fd, &f) < 0 || argint(5, &offset) < 0){
+    return -1;
+  }
+
+  if(!f->writable && (prot & PROT_WRITE) && (flags & MAP_SHARED)){
+    return -1;
+  }
+  struct proc* p;
+  p = myproc();
+  
+  struct VMA* vma = 0;
+  //从上往下找到第一个可用的vma
+  for (int i = NVMA - 1; i >= 0; i--)
+  {
+    if(p->vmas[i].vm_valid){
+      vma = &p->vmas[i];
+      //置当前的imaxvma为i
+      p->current_imaxvma = i;
+      break;
+    }
+  }
+  if(vma){
+    printf("sys_mmap(): %p, length: %d\n",p->current_maxva, length);
+    uint64 vm_end = PGROUNDDOWN(p->current_maxva);
+    uint64 vm_start = PGROUNDDOWN(p->current_maxva - length);
+    printf("vm_start(): %p, vm_end: %p\n",vm_start, vm_end);
+    vma->vm_valid = 0;
+    vma->vm_fd = fd;
+    vma->vm_file = f;
+    vma->vm_flags = flags;
+    vma->vm_prot = prot;
+    vma->vm_end = vm_end;
+    vma->vm_start = vm_start;
+    vma->vm_file->ref++;
+    p->current_maxva = vm_start;
+  }
+  else
+  {
+    return -1;
+  }  
+  return vma->vm_start;
+}
+
+uint64
+sys_munmap(void){
+  uint64 addr;
+  int length;
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0){
+    return -1;
+  }
+  printf("### sys_munmap: \n");
+  printf("addr: %p, length:%d, current:%p\n", addr, length, myproc()->current_maxva);
+  struct proc* p = myproc();
+  for (int i = NVMA - 1; i >= 0; i--)
+  {
+    if(p->vmas[i].vm_start <= addr && addr <= p->vmas[i].vm_end){
+      struct VMA* vma = &p->vmas[i];
+      if(walkaddr(p->pagetable, vma->vm_start)){
+        if(vma->vm_flags == MAP_SHARED){
+          printf("sys_munmap(): write back \n");
+          filewrite(vma->vm_file, vma->vm_start, length);
+        }
+        uvmunmap(p->pagetable, vma->vm_start, length ,1);
+      }
+
+      vma->vm_start += length; 
+      printf("vma_start: %p, vma_end: %p\n", vma->vm_start, vma->vm_end);
+      if(vma->vm_start == vma->vm_end){
+        vma->vm_file->ref--;
+        vma->vm_valid = 1;
+      }
+
+      int j;
+      for (j = p->current_imaxvma; j < NVMA; j++)
+      {
+        if(!p->vmas[j].vm_valid){
+          p->current_maxva = p->vmas[j].vm_start;
+          p->current_imaxvma = j;
+          break;
+        }
+      }
+      if(j == NVMA){
+        p->current_maxva = VMASTART;
+      }
+      return 0;
+    }
+  }
+  return -1;
+}
+
