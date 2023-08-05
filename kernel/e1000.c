@@ -141,7 +141,7 @@ e1000_recv(void)
     acquire(&e1000_lock);
     mbufput(rx_mbufs[index], rx_ring[index].length);
     struct mbuf *rx_buf=rx_mbufs[index];
-    net_rx(rx_buf);
+    //net_rx(rx_buf);
     struct mbuf *buf=mbufalloc(0);
     if (!buf)
     {
@@ -153,6 +153,7 @@ e1000_recv(void)
     rx_ring[index].addr=(uint64)buf->head;
     rx_ring[index].status=0;
     release(&e1000_lock);
+    net_rx(rx_buf);
     index=(regs[E1000_RDT]+1)%RX_RING_SIZE;
   }
 }
